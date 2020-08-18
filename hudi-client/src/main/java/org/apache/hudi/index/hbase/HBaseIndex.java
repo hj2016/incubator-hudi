@@ -23,6 +23,7 @@ import org.apache.hudi.common.model.HoodieKey;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.model.HoodieRecordLocation;
 import org.apache.hudi.common.model.HoodieRecordPayload;
+import org.apache.hudi.common.model.EmptyHoodieRecordPayload;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.HoodieTimeline;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
@@ -130,8 +131,20 @@ public class HBaseIndex<T extends HoodieRecordPayload> extends HoodieIndex<T> {
     throw new UnsupportedOperationException("HBase index does not implement check exist");
   }
 
-  private Connection getHBaseConnection() {
+  private Connection getHBaseConnection() throws IOException {
     Configuration hbaseConfig = HBaseConfiguration.create();
+
+    /*hbaseConfig.set("hadoop.security.authentication", "Kerberos");
+    hbaseConfig.set("hbase.security.authentication", "Kerberos");
+    hbaseConfig.set("hbase.master.kerberos.principal", "hbase/master@HADOOP.COM");
+    hbaseConfig.addResource(new Path("/home/huangjing/git/hudi-test/src/main/resources/core-site.xml"));
+    hbaseConfig.addResource(new Path("/home/huangjing/git/hudi-test/src/main/resources/hdfs-site.xml"));
+    hbaseConfig.addResource(new Path("/home/huangjing/git/hudi-test/src/main/resources/hbase-site.xml"));
+
+    System.setProperty("java.security.krb5.conf", "/home/huangjing/testdata/kerberos/krb5.conf");
+    System.setProperty("sun.security.krb5.debug", "true");
+    System.setProperty("javax.security.auth.useSubjectCredsOnly", "false");*/
+
     String quorum = config.getHbaseZkQuorum();
     hbaseConfig.set("hbase.zookeeper.quorum", quorum);
     String zkZnodeParent = config.getHBaseZkZnodeParent();
@@ -140,11 +153,16 @@ public class HBaseIndex<T extends HoodieRecordPayload> extends HoodieIndex<T> {
     }
     String port = String.valueOf(config.getHbaseZkPort());
     hbaseConfig.set("hbase.zookeeper.property.clientPort", port);
+
+    /*UserGroupInformation.setConfiguration(hbaseConfig);
+    UserGroupInformation ugi = UserGroupInformation.loginUserFromKeytabAndReturnUGI("hbase/master@HADOOP.COM", "/home/huangjing/testdata/kerberos/hbase.keytab");
+    UserGroupInformation.setLoginUser(ugi);*/
+
     try {
       return ConnectionFactory.createConnection(hbaseConfig);
     } catch (IOException e) {
       throw new HoodieDependentSystemUnavailableException(HoodieDependentSystemUnavailableException.HBASE,
-          quorum + ":" + port);
+              quorum + ":" + port);
     }
   }
 
@@ -195,6 +213,7 @@ public class HBaseIndex<T extends HoodieRecordPayload> extends HoodieIndex<T> {
         hoodieRecordIterator) -> {
 
       int multiGetBatchSize = config.getHbaseIndexGetBatchSize();
+      boolean updatePartitionPath = config.getHbaseIndexUpdatePartitionPath();
 
       // Grab the global HBase connection
       synchronized (HBaseIndex.class) {
@@ -212,36 +231,61 @@ public class HBaseIndex<T extends HoodieRecordPayload> extends HoodieIndex<T> {
           statements.add(generateStatement(rec.getRecordKey()));
           currentBatchOfRecords.add(rec);
           // iterator till we reach batch size
-          if (statements.size() >= multiGetBatchSize || !hoodieRecordIterator.hasNext()) {
-            // get results for batch from Hbase
-            Result[] results = doGet(hTable, statements);
-            // clear statements to be GC'd
-            statements.clear();
-            for (Result result : results) {
-              // first, attempt to grab location from HBase
-              HoodieRecord currentRecord = currentBatchOfRecords.remove(0);
-              if (result.getRow() != null) {
-                String keyFromResult = Bytes.toString(result.getRow());
-                String commitTs = Bytes.toString(result.getValue(SYSTEM_COLUMN_FAMILY, COMMIT_TS_COLUMN));
-                String fileId = Bytes.toString(result.getValue(SYSTEM_COLUMN_FAMILY, FILE_NAME_COLUMN));
-                String partitionPath = Bytes.toString(result.getValue(SYSTEM_COLUMN_FAMILY, PARTITION_PATH_COLUMN));
+          if (hoodieRecordIterator.hasNext() && statements.size() < multiGetBatchSize) {
+            continue;
+          }
 
-                if (checkIfValidCommit(metaClient, commitTs)) {
-                  currentRecord = new HoodieRecord(new HoodieKey(currentRecord.getRecordKey(), partitionPath),
-                      currentRecord.getData());
-                  currentRecord.unseal();
-                  currentRecord.setCurrentLocation(new HoodieRecordLocation(commitTs, fileId));
-                  currentRecord.seal();
-                  taggedRecords.add(currentRecord);
-                  // the key from Result and the key being processed should be same
-                  assert (currentRecord.getRecordKey().contentEquals(keyFromResult));
-                } else { // if commit is invalid, treat this as a new taggedRecord
-                  taggedRecords.add(currentRecord);
-                }
-              } else {
-                taggedRecords.add(currentRecord);
-              }
+          // get results for batch from Hbase
+          Result[] results = doGet(hTable, statements);
+          // clear statements to be GC'd
+          statements.clear();
+          for (Result result : results) {
+            // first, attempt to grab location from HBase
+            HoodieRecord currentRecord = currentBatchOfRecords.remove(0);
+
+            if (result.getRow() == null) {
+              taggedRecords.add(currentRecord);
+              continue;
             }
+
+            String keyFromResult = Bytes.toString(result.getRow());
+            String commitTs = Bytes.toString(result.getValue(SYSTEM_COLUMN_FAMILY, COMMIT_TS_COLUMN));
+            String fileId = Bytes.toString(result.getValue(SYSTEM_COLUMN_FAMILY, FILE_NAME_COLUMN));
+            String partitionPath = Bytes.toString(result.getValue(SYSTEM_COLUMN_FAMILY, PARTITION_PATH_COLUMN));
+
+            if (!checkIfValidCommit(metaClient, commitTs)) {
+              // if commit is invalid, treat this as a new taggedRecord
+              taggedRecords.add(currentRecord);
+              continue;
+            }
+
+
+            if (updatePartitionPath && !partitionPath.equals(currentRecord.getPartitionPath())) {
+              // delete partition old data record
+              HoodieRecord<T> emptyRecord = new HoodieRecord(new HoodieKey(currentRecord.getRecordKey(), partitionPath),
+                      new EmptyHoodieRecordPayload());
+              emptyRecord.unseal();
+              emptyRecord.setCurrentLocation(new HoodieRecordLocation(commitTs, fileId));
+              emptyRecord.seal();
+
+              // insert partition new data record
+              currentRecord = new HoodieRecord(new HoodieKey(currentRecord.getRecordKey(), currentRecord.getPartitionPath()),
+                      currentRecord.getData());
+
+              taggedRecords.add(emptyRecord);
+              taggedRecords.add(currentRecord);
+
+            } else {
+              currentRecord = new HoodieRecord(new HoodieKey(currentRecord.getRecordKey(), partitionPath),
+                      currentRecord.getData());
+              currentRecord.unseal();
+              currentRecord.setCurrentLocation(new HoodieRecordLocation(commitTs, fileId));
+              currentRecord.seal();
+              taggedRecords.add(currentRecord);
+              // the key from Result and the key being processed should be same
+              assert (currentRecord.getRecordKey().contentEquals(keyFromResult));
+            }
+
           }
         }
       } catch (IOException e) {
@@ -346,6 +390,7 @@ public class HBaseIndex<T extends HoodieRecordPayload> extends HoodieIndex<T> {
     final HBaseIndexQPSResourceAllocator hBaseIndexQPSResourceAllocator = createQPSResourceAllocator(this.config);
     setPutBatchSize(writeStatusRDD, hBaseIndexQPSResourceAllocator, jsc);
     LOG.info("multiPutBatchSize: before hbase puts" + multiPutBatchSize);
+    // 更新索引
     JavaRDD<WriteStatus> writeStatusJavaRDD = writeStatusRDD.mapPartitionsWithIndex(updateLocationFunction(), true);
     // caching the index updated status RDD
     writeStatusJavaRDD = writeStatusJavaRDD.persist(config.getWriteStatusStorageLevel());
@@ -387,7 +432,7 @@ public class HBaseIndex<T extends HoodieRecordPayload> extends HoodieIndex<T> {
 
   public Tuple2<Long, Integer> getHBasePutAccessParallelism(final JavaRDD<WriteStatus> writeStatusRDD) {
     final JavaPairRDD<Long, Integer> insertOnlyWriteStatusRDD = writeStatusRDD
-        .filter(w -> w.getStat().getNumInserts() > 0).mapToPair(w -> new Tuple2<>(w.getStat().getNumInserts(), 1));
+            .filter(w -> w.getStat().getNumInserts() > 0).mapToPair(w -> new Tuple2<>(w.getStat().getNumInserts(), 1));
     return insertOnlyWriteStatusRDD.fold(new Tuple2<>(0L, 0), (w, c) -> new Tuple2<>(w._1 + c._1, w._2 + c._2));
   }
 

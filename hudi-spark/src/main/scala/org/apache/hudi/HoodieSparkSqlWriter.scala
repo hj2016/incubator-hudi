@@ -96,7 +96,9 @@ private[hudi] object HoodieSparkSqlWriter {
 
       // Convert to RDD[HoodieRecord]
       val keyGenerator = DataSourceUtils.createKeyGenerator(toProperties(parameters))
+      // 构建genericRecords　主要加载schma 信息和值信息
       val genericRecords: RDD[GenericRecord] = AvroConversionUtils.createRdd(df, structName, nameSpace)
+      // 构造HoodieRecord Rdd 对象主要是包装GenericRecord 用户可以自定义类更新数据比较方式
       val hoodieAllIncomingRecords = genericRecords.map(gr => {
         val orderingVal = DataSourceUtils.getNestedFieldValAsString(
           gr, parameters(PRECOMBINE_FIELD_OPT_KEY), false).asInstanceOf[Comparable[_]]
@@ -131,6 +133,7 @@ private[hudi] object HoodieSparkSqlWriter {
 
       val hoodieRecords =
         if (parameters(INSERT_DROP_DUPS_OPT_KEY).toBoolean) {
+          // 插入前是否要删除重复项数据默认为否
           DataSourceUtils.dropDuplicates(
             jsc,
             hoodieAllIncomingRecords,
@@ -144,6 +147,7 @@ private[hudi] object HoodieSparkSqlWriter {
         (true, common.util.Option.empty())
       }
       client.startCommitWithTime(commitTime)
+      // 执行写入操作
       val writeStatuses = DataSourceUtils.doWriteOperation(client, hoodieRecords, commitTime, operation)
       (writeStatuses, client)
     } else {

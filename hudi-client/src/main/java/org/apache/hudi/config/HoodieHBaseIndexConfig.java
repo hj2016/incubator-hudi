@@ -101,6 +101,17 @@ public class HoodieHBaseIndexConfig extends DefaultHoodieConfig {
   public static final String HBASE_ZK_PATH_QPS_ROOT = "hoodie.index.hbase.zkpath.qps_root";
   public static final String DEFAULT_HBASE_ZK_PATH_QPS_ROOT = "/QPS_ROOT";
 
+  /**
+   * Only applies if index type is Hbase.
+   * <p>
+   * When set to true, an update to a record with a different partition from its existing one
+   * will insert the record to the new partition and delete it from the old partition.
+   * <p>
+   * When set to false, a record will be updated to the old partition.
+   */
+  public static final String HBASE_INDEX_UPDATE_PARTITION_PATH = "hoodie.hbase.index.update.partition.path";
+  public static final Boolean DEFAULT_HBASE_INDEX_UPDATE_PARTITION_PATH = false;
+
   public HoodieHBaseIndexConfig(final Properties props) {
     super(props);
   }
@@ -215,6 +226,12 @@ public class HoodieHBaseIndexConfig extends DefaultHoodieConfig {
       return this;
     }
 
+    public Builder hbaseIndexUpdatePartitionPath(boolean updatePartitionPath) {
+      props.setProperty(HBASE_INDEX_UPDATE_PARTITION_PATH, String.valueOf(updatePartitionPath));
+      return this;
+    }
+
+
     /**
      * <p>
      * Method to set maximum QPS allowed per Region Server. This should be same across various jobs. This is intended to
@@ -258,6 +275,8 @@ public class HoodieHBaseIndexConfig extends DefaultHoodieConfig {
           HOODIE_INDEX_HBASE_ZK_CONNECTION_TIMEOUT_MS, String.valueOf(DEFAULT_ZK_CONNECTION_TIMEOUT_MS));
       setDefaultOnCondition(props, !props.containsKey(HBASE_INDEX_QPS_ALLOCATOR_CLASS), HBASE_INDEX_QPS_ALLOCATOR_CLASS,
           String.valueOf(DEFAULT_HBASE_INDEX_QPS_ALLOCATOR_CLASS));
+      setDefaultOnCondition(props, !props.containsKey(HBASE_INDEX_UPDATE_PARTITION_PATH), HBASE_INDEX_UPDATE_PARTITION_PATH,
+              String.valueOf(DEFAULT_HBASE_INDEX_UPDATE_PARTITION_PATH));
       return config;
     }
 

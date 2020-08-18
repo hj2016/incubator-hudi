@@ -177,11 +177,13 @@ public class HoodieWriteClient<T extends HoodieRecordPayload> extends AbstractHo
     HoodieTable<T> table = getTableAndInitCtx(OperationType.UPSERT);
     try {
       // De-dupe/merge if needed
+      // 合并数据，删除重复项数据
       JavaRDD<HoodieRecord<T>> dedupedRecords =
           combineOnCondition(config.shouldCombineBeforeUpsert(), records, config.getUpsertShuffleParallelism());
 
       Timer.Context indexTimer = metrics.getIndexCtx();
       // perform index loop up to get existing location of records
+      // 获取数据现有的位置,索引的实现类只有三种方式
       JavaRDD<HoodieRecord<T>> taggedRecords = getIndex().tagLocation(dedupedRecords, jsc, table);
       metrics.updateIndexMetrics(LOOKUP_STR, metrics.getDurationInMs(indexTimer == null ? 0L : indexTimer.stop()));
       return upsertRecordsInternal(taggedRecords, commitTime, table, true);
