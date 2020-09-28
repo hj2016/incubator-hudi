@@ -987,7 +987,7 @@ public class HoodieWriteClient<T extends HoodieRecordPayload> extends AbstractHo
       // we cannot allow the user to change the key or partitionPath, since that will affect
       // everything
       // so pick it from one of the records.
-      return new HoodieRecord<T>(rec1.getKey(), reducedData);
+      return new HoodieRecord<T>(rec1.getData().equals(reducedData) ? rec1.getKey() : rec2.getKey(), reducedData);
     }, parallelism).map(Tuple2::_2);
   }
 
