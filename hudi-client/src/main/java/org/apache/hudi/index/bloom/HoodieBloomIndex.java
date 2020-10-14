@@ -68,15 +68,18 @@ public class HoodieBloomIndex<T extends HoodieRecordPayload> extends HoodieIndex
                                               HoodieTable<T> hoodieTable) {
 
     // Step 0: cache the input record RDD
+    // 开启内存缓存机制
     if (config.getBloomIndexUseCaching()) {
       recordRDD.persist(config.getBloomIndexInputStorageLevel());
     }
 
     // Step 1: Extract out thinner JavaPairRDD of (partitionPath, recordKey)
+    // 提取分区路径和主键　（2018,a1）,(2019,a2),（2018,a3）
     JavaPairRDD<String, String> partitionRecordKeyPairRDD =
         recordRDD.mapToPair(record -> new Tuple2<>(record.getPartitionPath(), record.getRecordKey()));
 
     // Lookup indexes for all the partition/recordkey pair
+    // key和路径信信息　 / 文件id和时间
     JavaPairRDD<HoodieKey, HoodieRecordLocation> keyFilenamePairRDD =
         lookupIndex(partitionRecordKeyPairRDD, jsc, hoodieTable);
 
@@ -92,7 +95,7 @@ public class HoodieBloomIndex<T extends HoodieRecordPayload> extends HoodieIndex
     // Step 4: Tag the incoming records, as inserts or updates, by joining with existing record keys
     // Cost: 4 sec.
     JavaRDD<HoodieRecord<T>> taggedRecordRDD = tagLocationBacktoRecords(keyFilenamePairRDD, recordRDD);
-
+    //
     if (config.getBloomIndexUseCaching()) {
       recordRDD.unpersist(); // unpersist the input Record RDD
       keyFilenamePairRDD.unpersist();
@@ -138,10 +141,12 @@ public class HoodieBloomIndex<T extends HoodieRecordPayload> extends HoodieIndex
       JavaPairRDD<String, String> partitionRecordKeyPairRDD, final JavaSparkContext jsc,
       final HoodieTable hoodieTable) {
     // Obtain records per partition, in the incoming records
+    // 在增量数据中获取，每个分区的条数(2018,2),(2019,1)
     Map<String, Long> recordsPerPartition = partitionRecordKeyPairRDD.countByKey();
     List<String> affectedPartitionPathList = new ArrayList<>(recordsPerPartition.keySet());
 
     // Step 2: Load all involved files as <Partition, filename> pairs
+    // 找到分区路径对应的文件信息
     List<Tuple2<String, BloomIndexFileInfo>> fileInfoList =
         loadInvolvedFiles(affectedPartitionPathList, jsc, hoodieTable);
     final Map<String, List<BloomIndexFileInfo>> partitionToFileInfo =
@@ -189,9 +194,10 @@ public class HoodieBloomIndex<T extends HoodieRecordPayload> extends HoodieIndex
    */
   List<Tuple2<String, BloomIndexFileInfo>> loadInvolvedFiles(List<String> partitions, final JavaSparkContext jsc,
                                                              final HoodieTable hoodieTable) {
-
+    // partitions [2018,2019]
     // Obtain the latest data files from all the partitions.
     List<Pair<String, String>> partitionPathFileIDList =
+        // 这里为什么要根据分区的数据量取最大值了呢？　难道非分区长度可能为０？
         jsc.parallelize(partitions, Math.max(partitions.size(), 1)).flatMap(partitionPath -> {
           Option<HoodieInstant> latestCommitTime =
               hoodieTable.getMetaClient().getCommitsTimeline().filterCompletedInstants().lastInstant();

@@ -26,9 +26,11 @@ import org.apache.hudi.common.model.HoodieKey;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.model.HoodieRecordLocation;
 import org.apache.hudi.common.model.HoodieRecordPayload;
+import org.apache.hudi.common.model.EmptyHoodieRecordPayload;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.HoodieTimeline;
 import org.apache.hudi.common.table.timeline.HoodieActiveTimeline;
+import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.ReflectionUtils;
 import org.apache.hudi.common.util.collection.Pair;
@@ -144,6 +146,11 @@ public class HBaseIndex<T extends HoodieRecordPayload> extends HoodieIndex<T> {
     }
     String port = String.valueOf(config.getHbaseZkPort());
     hbaseConfig.set("hbase.zookeeper.property.clientPort", port);
+
+    /*UserGroupInformation.setConfiguration(hbaseConfig);
+    UserGroupInformation ugi = UserGroupInformation.loginUserFromKeytabAndReturnUGI("hbase/master@HADOOP.COM", "/home/huangjing/testdata/kerberos/hbase.keytab");
+    UserGroupInformation.setLoginUser(ugi);*/
+
     try {
       return ConnectionFactory.createConnection(hbaseConfig);
     } catch (IOException e) {
@@ -378,6 +385,7 @@ public class HBaseIndex<T extends HoodieRecordPayload> extends HoodieIndex<T> {
     final HBaseIndexQPSResourceAllocator hBaseIndexQPSResourceAllocator = createQPSResourceAllocator(this.config);
     setPutBatchSize(writeStatusRDD, hBaseIndexQPSResourceAllocator, jsc);
     LOG.info("multiPutBatchSize: before hbase puts" + multiPutBatchSize);
+    // 更新索引
     JavaRDD<WriteStatus> writeStatusJavaRDD = writeStatusRDD.mapPartitionsWithIndex(updateLocationFunction(), true);
     // caching the index updated status RDD
     writeStatusJavaRDD = writeStatusJavaRDD.persist(config.getWriteStatusStorageLevel());

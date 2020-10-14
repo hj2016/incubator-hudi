@@ -231,6 +231,12 @@ public class HoodieHBaseIndexConfig extends DefaultHoodieConfig {
       return this;
     }
 
+    public Builder hbaseIndexUpdatePartitionPath(boolean updatePartitionPath) {
+      props.setProperty(HBASE_INDEX_UPDATE_PARTITION_PATH, String.valueOf(updatePartitionPath));
+      return this;
+    }
+
+
     /**
      * <p>
      * Method to set maximum QPS allowed per Region Server. This should be same across various jobs. This is intended to
