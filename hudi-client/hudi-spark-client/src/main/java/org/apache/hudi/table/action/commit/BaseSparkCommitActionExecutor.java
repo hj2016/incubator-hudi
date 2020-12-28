@@ -28,11 +28,13 @@ import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.model.HoodieRecordLocation;
 import org.apache.hudi.common.model.HoodieRecordPayload;
 import org.apache.hudi.common.model.HoodieWriteStat;
+import org.apache.hudi.common.model.HoodieFileGroupId;
 import org.apache.hudi.common.model.WriteOperationType;
 import org.apache.hudi.common.table.timeline.HoodieActiveTimeline;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.util.CommitUtils;
 import org.apache.hudi.common.util.Option;
+import org.apache.hudi.common.util.ReflectionUtils;
 import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieCommitException;
@@ -46,6 +48,7 @@ import org.apache.hudi.table.HoodieTable;
 import org.apache.hudi.table.WorkloadProfile;
 import org.apache.hudi.table.WorkloadStat;
 import org.apache.hudi.table.action.HoodieWriteMetadata;
+import org.apache.hudi.table.action.cluster.strategy.UpdateStrategy;
 import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
 import org.apache.spark.Partitioner;
@@ -59,11 +62,13 @@ import java.io.Serializable;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.stream.Collectors;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 import java.util.Map;
 
 public abstract class BaseSparkCommitActionExecutor<T extends HoodieRecordPayload> extends
@@ -88,6 +93,18 @@ public abstract class BaseSparkCommitActionExecutor<T extends HoodieRecordPayloa
     super(context, config, table, instantTime, operationType, extraMetadata);
   }
 
+  private JavaRDD<HoodieRecord<T>> clusteringHandleUpdate(JavaRDD<HoodieRecord<T>> inputRecordsRDD) {
+    if (config.isClusteringEnabled()) {
+      Set<HoodieFileGroupId> fileGroupsInPendingClustering =
+          table.getFileSystemView().getFileGroupsInPendingClustering().map(entry -> entry.getKey()).collect(Collectors.toSet());
+      UpdateStrategy updateStrategy = (UpdateStrategy)ReflectionUtils
+          .loadClass(config.getClusteringUpdatesStrategyClass(), this.context, fileGroupsInPendingClustering);
+      return (JavaRDD<HoodieRecord<T>>)updateStrategy.handleUpdate(inputRecordsRDD);
+    } else {
+      return inputRecordsRDD;
+    }
+  }
+
   @Override
   public HoodieWriteMetadata<JavaRDD<WriteStatus>> execute(JavaRDD<HoodieRecord<T>> inputRecordsRDD) {
     HoodieWriteMetadata<JavaRDD<WriteStatus>> result = new HoodieWriteMetadata<>();
@@ -101,14 +118,18 @@ public abstract class BaseSparkCommitActionExecutor<T extends HoodieRecordPayloa
 
     WorkloadProfile profile = null;
     if (isWorkloadProfileNeeded()) {
+      context.setJobStatus(this.getClass().getSimpleName(), "Building workload profile");
       profile = new WorkloadProfile(buildProfile(inputRecordsRDD));
       LOG.info("Workload profile :" + profile);
       saveWorkloadProfileMetadataToInflight(profile, instantTime);
     }
 
+    // handle records update with clustering
+    JavaRDD<HoodieRecord<T>> inputRecordsRDDWithClusteringUpdate = clusteringHandleUpdate(inputRecordsRDD);
+
     // partition using the insert partitioner
     final Partitioner partitioner = getPartitioner(profile);
-    JavaRDD<HoodieRecord<T>> partitionedRecords = partition(inputRecordsRDD, partitioner);
+    JavaRDD<HoodieRecord<T>> partitionedRecords = partition(inputRecordsRDDWithClusteringUpdate, partitioner);
     JavaRDD<WriteStatus> writeStatusRDD = partitionedRecords.mapPartitionsWithIndex((partition, recordItr) -> {
       if (WriteOperationType.isChangingRecords(operationType)) {
         return handleUpsertPartition(instantTime, partition, recordItr, partitioner);
@@ -199,12 +220,14 @@ public abstract class BaseSparkCommitActionExecutor<T extends HoodieRecordPayloa
     commitOnAutoCommit(result);
   }
 
+  @Override
   protected String getCommitActionType() {
     return  table.getMetaClient().getCommitActionType();
   }
 
   @Override
   protected void commit(Option<Map<String, String>> extraMetadata, HoodieWriteMetadata<JavaRDD<WriteStatus>> result) {
+    context.setJobStatus(this.getClass().getSimpleName(), "Commit write status collect");
     commit(extraMetadata, result, result.getWriteStatuses().map(WriteStatus::getStat).collect());
   }
 
@@ -273,14 +296,6 @@ public abstract class BaseSparkCommitActionExecutor<T extends HoodieRecordPayloa
     }
     // these are updates
     HoodieMergeHandle upsertHandle = getUpdateHandle(partitionPath, fileId, recordItr);
-    return handleUpdateInternal(upsertHandle, fileId);
-  }
-
-  public Iterator<List<WriteStatus>> handleUpdate(String partitionPath, String fileId,
-                                                  Map<String, HoodieRecord<T>> keyToNewRecords,
-                                                  HoodieBaseFile oldDataFile) throws IOException {
-    // these are updates
-    HoodieMergeHandle upsertHandle = getUpdateHandle(partitionPath, fileId, keyToNewRecords, oldDataFile);
     return handleUpdateInternal(upsertHandle, fileId);
   }
 

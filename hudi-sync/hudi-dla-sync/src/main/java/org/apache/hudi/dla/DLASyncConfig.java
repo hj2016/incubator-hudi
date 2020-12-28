@@ -62,11 +62,17 @@ public class DLASyncConfig implements Serializable {
   @Parameter(names = {"--skip-ro-suffix"}, description = "Skip the `_ro` suffix for Read optimized table, when registering")
   public Boolean skipROSuffix = false;
 
+  @Parameter(names = {"--skip-rt-sync"}, description = "Skip the RT table syncing")
+  public Boolean skipRTSync = false;
+
   @Parameter(names = {"--hive-style-partitioning"}, description = "Use DLA hive style partitioning, true if like the following style: field1=value1/field2=value2")
   public Boolean useDLASyncHiveStylePartitioning = false;
 
   @Parameter(names = {"--help", "-h"}, help = true)
   public Boolean help = false;
+
+  @Parameter(names = {"--support-timestamp"}, description = "If true, converts int64(timestamp_micros) to timestamp type")
+  public Boolean supportTimestamp = false;
 
   public static DLASyncConfig copy(DLASyncConfig cfg) {
     DLASyncConfig newConfig = new DLASyncConfig();
@@ -80,7 +86,9 @@ public class DLASyncConfig implements Serializable {
     newConfig.partitionValueExtractorClass = cfg.partitionValueExtractorClass;
     newConfig.assumeDatePartitioning = cfg.assumeDatePartitioning;
     newConfig.skipROSuffix = cfg.skipROSuffix;
+    newConfig.skipRTSync = cfg.skipRTSync;
     newConfig.useDLASyncHiveStylePartitioning = cfg.useDLASyncHiveStylePartitioning;
+    newConfig.supportTimestamp = cfg.supportTimestamp;
     return newConfig;
   }
 
