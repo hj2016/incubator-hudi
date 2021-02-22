@@ -23,6 +23,7 @@ import org.apache.hudi.client.HoodieJavaWriteClient;
 import org.apache.hudi.client.common.HoodieJavaEngineContext;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.HoodieAvroPayload;
+import org.apache.hudi.common.model.HoodieKey;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.model.HoodieTableType;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
@@ -45,9 +46,9 @@ import java.util.stream.Collectors;
 /**
  * Simple examples of #{@link HoodieJavaWriteClient}.
  *
- * Usage: HoodieWriteClientExample <tablePath> <tableName>
+ * Usage: HoodieJavaWriteClientExample <tablePath> <tableName>
  * <tablePath> and <tableName> describe root path of hudi and table name
- * for example, `HoodieWriteClientExample file:///tmp/hoodie/sample-table hoodie_rt`
+ * for example, `HoodieJavaWriteClientExample file:///tmp/hoodie/sample-table hoodie_rt`
  */
 public class HoodieJavaWriteClientExample {
 
@@ -57,7 +58,7 @@ public class HoodieJavaWriteClientExample {
 
   public static void main(String[] args) throws Exception {
     if (args.length < 2) {
-      System.err.println("Usage: HoodieWriteClientExample <tablePath> <tableName>");
+      System.err.println("Usage: HoodieJavaWriteClientExample <tablePath> <tableName>");
       System.exit(1);
     }
     String tablePath = args[0];
@@ -103,6 +104,15 @@ public class HoodieJavaWriteClientExample {
     writeRecords =
         recordsSoFar.stream().map(r -> new HoodieRecord<HoodieAvroPayload>(r)).collect(Collectors.toList());
     client.upsert(writeRecords, newCommitTime);
+
+    // Delete
+    newCommitTime = client.startCommit();
+    LOG.info("Starting commit " + newCommitTime);
+    // just delete half of the records
+    int numToDelete = recordsSoFar.size() / 2;
+    List<HoodieKey> toBeDeleted =
+        recordsSoFar.stream().map(HoodieRecord::getKey).limit(numToDelete).collect(Collectors.toList());
+    client.delete(toBeDeleted, newCommitTime);
 
     client.close();
   }

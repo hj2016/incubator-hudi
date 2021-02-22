@@ -19,7 +19,7 @@
 package org.apache.hudi.io;
 
 import org.apache.hudi.client.WriteStatus;
-import org.apache.hudi.client.common.TaskContextSupplier;
+import org.apache.hudi.common.engine.TaskContextSupplier;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.HoodieBaseFile;
 import org.apache.hudi.common.model.HoodiePartitionMetadata;
@@ -50,25 +50,55 @@ import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 @SuppressWarnings("Duplicates")
+/**
+ * Handle to merge incoming records to those in storage.
+ * <p>
+ * Simplified Logic:
+ * For every existing record
+ *     Check if there is a new record coming in. If yes, merge two records and write to file
+ *     else write the record as is
+ * For all pending records from incoming batch, write to file.
+ *
+ * Illustration with simple data.
+ * Incoming data:
+ *     rec1_2, rec4_2, rec5_1, rec6_1
+ * Existing data:
+ *     rec1_1, rec2_1, rec3_1, rec4_1
+ *
+ * For every existing record, merge w/ incoming if requried and write to storage.
+ *    => rec1_1 and rec1_2 is merged to write rec1_2 to storage
+ *    => rec2_1 is written as is
+ *    => rec3_1 is written as is
+ *    => rec4_2 and rec4_1 is merged to write rec4_2 to storage
+ * Write all pending records from incoming set to storage
+ *    => rec5_1 and rec6_1
+ *
+ * Final snapshot in storage
+ * rec1_2, rec2_1, rec3_1, rec4_2, rec5_1, rec6_1
+ *
+ * </p>
+ */
 public class HoodieMergeHandle<T extends HoodieRecordPayload, I, K, O> extends HoodieWriteHandle<T, I, K, O> {
 
   private static final Logger LOG = LogManager.getLogger(HoodieMergeHandle.class);
 
   protected Map<String, HoodieRecord<T>> keyToNewRecords;
   protected Set<String> writtenRecordKeys;
-  private HoodieFileWriter<IndexedRecord> fileWriter;
+  protected HoodieFileWriter<IndexedRecord> fileWriter;
 
-  private Path newFilePath;
-  private Path oldFilePath;
-  private long recordsWritten = 0;
-  private long recordsDeleted = 0;
-  private long updatedRecordsWritten = 0;
+  protected Path newFilePath;
+  protected Path oldFilePath;
+  protected long recordsWritten = 0;
+  protected long recordsDeleted = 0;
+  protected long updatedRecordsWritten = 0;
   protected long insertRecordsWritten = 0;
   protected boolean useWriterSchema;
   private HoodieBaseFile baseFileToMerge;
@@ -103,6 +133,13 @@ public class HoodieMergeHandle<T extends HoodieRecordPayload, I, K, O> extends H
   }
 
   /**
+   * Returns the data file name.
+   */
+  protected String generatesDataFileName() {
+    return FSUtils.makeDataFileName(instantTime, writeToken, fileId, hoodieTable.getBaseFileExtension());
+  }
+
+  /**
    * Extract old file path, initialize StorageWriter and WriteStatus.
    */
   private void init(String fileId, String partitionPath, HoodieBaseFile baseFileToMerge) {
@@ -119,7 +156,7 @@ public class HoodieMergeHandle<T extends HoodieRecordPayload, I, K, O> extends H
       partitionMetadata.trySave(getPartitionId());
 
       oldFilePath = new Path(config.getBasePath() + "/" + partitionPath + "/" + latestValidFilePath);
-      String newFileName = FSUtils.makeDataFileName(instantTime, writeToken, fileId, hoodieTable.getBaseFileExtension());
+      String newFileName = generatesDataFileName();
       String relativePath = new Path((partitionPath.isEmpty() ? "" : partitionPath + "/")
           + newFileName).toString();
       newFilePath = new Path(config.getBasePath(), relativePath);
@@ -147,18 +184,25 @@ public class HoodieMergeHandle<T extends HoodieRecordPayload, I, K, O> extends H
   }
 
   /**
-   * Load the new incoming records in a map and return partitionPath.
+   * Initialize a spillable map for incoming records.
    */
-  private void init(String fileId, Iterator<HoodieRecord<T>> newRecordsItr) {
+  protected void initializeIncomingRecordsMap() {
     try {
       // Load the new records in a map
       long memoryForMerge = IOUtils.getMaxMemoryPerPartitionMerge(taskContextSupplier, config.getProps());
       LOG.info("MaxMemoryPerPartitionMerge => " + memoryForMerge);
       this.keyToNewRecords = new ExternalSpillableMap<>(memoryForMerge, config.getSpillableMapBasePath(),
-          new DefaultSizeEstimator(), new HoodieRecordSizeEstimator(writerSchema));
+              new DefaultSizeEstimator(), new HoodieRecordSizeEstimator(writerSchema));
     } catch (IOException io) {
       throw new HoodieIOException("Cannot instantiate an ExternalSpillableMap", io);
     }
+  }
+
+  /**
+   * Load the new incoming records in a map and return partitionPath.
+   */
+  protected void init(String fileId, Iterator<HoodieRecord<T>> newRecordsItr) {
+    initializeIncomingRecordsMap();
     while (newRecordsItr.hasNext()) {
       HoodieRecord<T> record = newRecordsItr.next();
       // update the new location of the record, so we know where to find it next
@@ -258,7 +302,7 @@ public class HoodieMergeHandle<T extends HoodieRecordPayload, I, K, O> extends H
   }
 
   @Override
-  public WriteStatus close() {
+  public List<WriteStatus> close() {
     try {
       // write out any pending records (this can happen when inserts are turned into updates)
       Iterator<HoodieRecord<T>> newRecordsItr = (keyToNewRecords instanceof ExternalSpillableMap)
@@ -301,7 +345,7 @@ public class HoodieMergeHandle<T extends HoodieRecordPayload, I, K, O> extends H
       LOG.info(String.format("MergeHandle for partitionPath %s fileID %s, took %d ms.", stat.getPartitionPath(),
           stat.getFileId(), runtimeStats.getTotalUpsertTime()));
 
-      return writeStatus;
+      return Collections.singletonList(writeStatus);
     } catch (IOException e) {
       throw new HoodieUpsertException("Failed to close UpdateHandle", e);
     }
@@ -331,11 +375,6 @@ public class HoodieMergeHandle<T extends HoodieRecordPayload, I, K, O> extends H
 
   public Path getOldFilePath() {
     return oldFilePath;
-  }
-
-  @Override
-  public WriteStatus getWriteStatus() {
-    return writeStatus;
   }
 
   @Override

@@ -20,7 +20,7 @@ package org.apache.hudi.table.action.restore;
 
 import org.apache.hudi.avro.model.HoodieRestoreMetadata;
 import org.apache.hudi.avro.model.HoodieRollbackMetadata;
-import org.apache.hudi.client.common.HoodieEngineContext;
+import org.apache.hudi.common.engine.HoodieEngineContext;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.HoodieRecordPayload;
 import org.apache.hudi.common.table.timeline.HoodieActiveTimeline;
@@ -63,7 +63,7 @@ public abstract class BaseRestoreActionExecutor<T extends HoodieRecordPayload, I
     restoreTimer.startTimer();
 
     // Get all the commits on the timeline after the provided commit time
-    List<HoodieInstant> instantsToRollback = table.getActiveTimeline().getCommitsAndCompactionTimeline()
+    List<HoodieInstant> instantsToRollback = table.getActiveTimeline().getWriteTimeline()
         .getReverseOrderedInstants()
         .filter(instant -> HoodieActiveTimeline.GREATER_THAN.test(instant.getTimestamp(), restoreInstantTime))
         .collect(Collectors.toList());

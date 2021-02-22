@@ -19,8 +19,8 @@
 package org.apache.hudi.table;
 
 import org.apache.hudi.client.WriteStatus;
-import org.apache.hudi.client.common.HoodieEngineContext;
 import org.apache.hudi.client.common.HoodieSparkEngineContext;
+import org.apache.hudi.common.engine.HoodieEngineContext;
 import org.apache.hudi.common.model.HoodieKey;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.model.HoodieRecordPayload;
@@ -42,13 +42,10 @@ public abstract class HoodieSparkTable<T extends HoodieRecordPayload>
   }
 
   public static <T extends HoodieRecordPayload> HoodieSparkTable<T> create(HoodieWriteConfig config, HoodieEngineContext context) {
-    HoodieTableMetaClient metaClient = new HoodieTableMetaClient(
-        context.getHadoopConf().get(),
-        config.getBasePath(),
-        true,
-        config.getConsistencyGuardConfig(),
-        Option.of(new TimelineLayoutVersion(config.getTimelineLayoutVersion()))
-    );
+    HoodieTableMetaClient metaClient =
+        HoodieTableMetaClient.builder().setConf(context.getHadoopConf().get()).setBasePath(config.getBasePath())
+            .setLoadActiveTimelineOnLoad(true).setConsistencyGuardConfig(config.getConsistencyGuardConfig())
+            .setLayoutVersion(Option.of(new TimelineLayoutVersion(config.getTimelineLayoutVersion()))).build();
     return HoodieSparkTable.create(config, (HoodieSparkEngineContext) context, metaClient);
   }
 

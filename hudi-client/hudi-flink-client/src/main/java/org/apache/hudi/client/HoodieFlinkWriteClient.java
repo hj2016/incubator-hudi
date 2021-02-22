@@ -18,24 +18,32 @@
 
 package org.apache.hudi.client;
 
-import org.apache.hudi.client.common.HoodieEngineContext;
 import org.apache.hudi.client.common.HoodieFlinkEngineContext;
 import org.apache.hudi.client.embedded.EmbeddedTimelineService;
+import org.apache.hudi.common.engine.HoodieEngineContext;
 import org.apache.hudi.common.model.HoodieCommitMetadata;
 import org.apache.hudi.common.model.HoodieKey;
 import org.apache.hudi.common.model.HoodieRecord;
+import org.apache.hudi.common.model.HoodieRecordLocation;
 import org.apache.hudi.common.model.HoodieRecordPayload;
+import org.apache.hudi.common.model.HoodieTableType;
 import org.apache.hudi.common.model.HoodieWriteStat;
 import org.apache.hudi.common.model.WriteOperationType;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.HoodieTableVersion;
+import org.apache.hudi.common.table.timeline.HoodieActiveTimeline;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.table.timeline.HoodieTimeline;
+import org.apache.hudi.common.util.CommitUtils;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieNotSupportedException;
 import org.apache.hudi.index.FlinkHoodieIndex;
 import org.apache.hudi.index.HoodieIndex;
+import org.apache.hudi.io.FlinkCreateHandle;
+import org.apache.hudi.io.FlinkMergeHandle;
+import org.apache.hudi.io.HoodieWriteHandle;
+import org.apache.hudi.io.MiniBatchHandle;
 import org.apache.hudi.table.BulkInsertPartitioner;
 import org.apache.hudi.table.HoodieFlinkTable;
 import org.apache.hudi.table.HoodieTable;
@@ -46,6 +54,8 @@ import com.codahale.metrics.Timer;
 import org.apache.hadoop.conf.Configuration;
 
 import java.io.IOException;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -54,17 +64,26 @@ import java.util.stream.Collectors;
 public class HoodieFlinkWriteClient<T extends HoodieRecordPayload> extends
     AbstractHoodieWriteClient<T, List<HoodieRecord<T>>, List<HoodieKey>, List<WriteStatus>> {
 
+  /**
+   * FileID to write handle mapping in order to record the write handles for each file group,
+   * so that we can append the mini-batch data buffer incrementally.
+   */
+  private Map<String, HoodieWriteHandle<?, ?, ?, ?>> bucketToHandles;
+
   public HoodieFlinkWriteClient(HoodieEngineContext context, HoodieWriteConfig clientConfig) {
-    super(context, clientConfig);
+    this(context, clientConfig, false);
   }
 
+  @Deprecated
   public HoodieFlinkWriteClient(HoodieEngineContext context, HoodieWriteConfig writeConfig, boolean rollbackPending) {
-    super(context, writeConfig, rollbackPending);
+    super(context, writeConfig);
+    this.bucketToHandles = new HashMap<>();
   }
 
+  @Deprecated
   public HoodieFlinkWriteClient(HoodieEngineContext context, HoodieWriteConfig writeConfig, boolean rollbackPending,
                                 Option<EmbeddedTimelineService> timelineService) {
-    super(context, writeConfig, rollbackPending, timelineService);
+    super(context, writeConfig, timelineService);
   }
 
   /**
@@ -106,9 +125,24 @@ public class HoodieFlinkWriteClient<T extends HoodieRecordPayload> extends
     HoodieTable<T, List<HoodieRecord<T>>, List<HoodieKey>, List<WriteStatus>> table =
         getTableAndInitCtx(WriteOperationType.UPSERT, instantTime);
     table.validateUpsertSchema();
-    setOperationType(WriteOperationType.UPSERT);
-    this.asyncCleanerService = AsyncCleanerService.startAsyncCleaningIfEnabled(this, instantTime);
-    HoodieWriteMetadata<List<WriteStatus>> result = table.upsert(context, instantTime, records);
+    preWrite(instantTime, WriteOperationType.UPSERT);
+    final HoodieRecord<T> record = records.get(0);
+    final HoodieRecordLocation loc = record.getCurrentLocation();
+    final String fileID = loc.getFileId();
+    final boolean isInsert = loc.getInstantTime().equals("I");
+    final HoodieWriteHandle<?, ?, ?, ?> writeHandle;
+    if (bucketToHandles.containsKey(fileID)) {
+      writeHandle = bucketToHandles.get(fileID);
+    } else {
+      // create the write handle if not exists
+      writeHandle = isInsert
+          ? new FlinkCreateHandle<>(getConfig(), instantTime, table, record.getPartitionPath(),
+          fileID, table.getTaskContextSupplier())
+          : new FlinkMergeHandle<>(getConfig(), instantTime, table, records.listIterator(), record.getPartitionPath(),
+          fileID, table.getTaskContextSupplier());
+      bucketToHandles.put(fileID, writeHandle);
+    }
+    HoodieWriteMetadata<List<WriteStatus>> result = ((HoodieFlinkTable<T>) table).upsert(context, writeHandle, instantTime, records);
     if (result.getIndexLookupDuration().isPresent()) {
       metrics.updateIndexMetrics(LOOKUP_STR, result.getIndexLookupDuration().get().toMillis());
     }
@@ -125,8 +159,7 @@ public class HoodieFlinkWriteClient<T extends HoodieRecordPayload> extends
     HoodieTable<T, List<HoodieRecord<T>>, List<HoodieKey>, List<WriteStatus>> table =
         getTableAndInitCtx(WriteOperationType.INSERT, instantTime);
     table.validateUpsertSchema();
-    setOperationType(WriteOperationType.INSERT);
-    this.asyncCleanerService = AsyncCleanerService.startAsyncCleaningIfEnabled(this, instantTime);
+    preWrite(instantTime, WriteOperationType.INSERT);
     HoodieWriteMetadata<List<WriteStatus>> result = table.insert(context, instantTime, records);
     if (result.getIndexLookupDuration().isPresent()) {
       metrics.updateIndexMetrics(LOOKUP_STR, result.getIndexLookupDuration().get().toMillis());
@@ -158,7 +191,7 @@ public class HoodieFlinkWriteClient<T extends HoodieRecordPayload> extends
   public List<WriteStatus> delete(List<HoodieKey> keys, String instantTime) {
     HoodieTable<T, List<HoodieRecord<T>>, List<HoodieKey>, List<WriteStatus>> table =
         getTableAndInitCtx(WriteOperationType.DELETE, instantTime);
-    setOperationType(WriteOperationType.DELETE);
+    preWrite(instantTime, WriteOperationType.DELETE);
     HoodieWriteMetadata<List<WriteStatus>> result = table.delete(context,instantTime, keys);
     return postWrite(result, instantTime, table);
   }
@@ -200,6 +233,17 @@ public class HoodieFlinkWriteClient<T extends HoodieRecordPayload> extends
     return getTableAndInitCtx(metaClient, operationType);
   }
 
+  /**
+   * Clean the write handles within a checkpoint interval, this operation
+   * would close the underneath file handles.
+   */
+  public void cleanHandles() {
+    this.bucketToHandles.values().forEach(handle -> {
+      ((MiniBatchHandle) handle).finishWrite();
+    });
+    this.bucketToHandles.clear();
+  }
+
   private HoodieTable<T, List<HoodieRecord<T>>, List<HoodieKey>, List<WriteStatus>> getTableAndInitCtx(HoodieTableMetaClient metaClient, WriteOperationType operationType) {
     if (operationType == WriteOperationType.DELETE) {
       setWriteSchemaForDeletes(metaClient);
@@ -219,5 +263,46 @@ public class HoodieFlinkWriteClient<T extends HoodieRecordPayload> extends
     HoodieTimeline unCompletedTimeline = table.getMetaClient().getCommitsTimeline().filterInflightsAndRequested();
     return unCompletedTimeline.getInstants().filter(x -> x.getAction().equals(commitType)).map(HoodieInstant::getTimestamp)
         .collect(Collectors.toList());
+  }
+
+  public String getInflightAndRequestedInstant(String tableType) {
+    final String commitType = CommitUtils.getCommitActionType(HoodieTableType.valueOf(tableType));
+    HoodieFlinkTable<T> table = HoodieFlinkTable.create(config, (HoodieFlinkEngineContext) context);
+    HoodieTimeline unCompletedTimeline = table.getMetaClient().getCommitsTimeline().filterInflightsAndRequested();
+    return unCompletedTimeline.getInstants()
+        .filter(x -> x.getAction().equals(commitType))
+        .map(HoodieInstant::getTimestamp)
+        .collect(Collectors.toList()).stream()
+        .max(Comparator.naturalOrder())
+        .orElse(null);
+  }
+
+  public String getLastCompletedInstant(String tableType) {
+    final String commitType = CommitUtils.getCommitActionType(HoodieTableType.valueOf(tableType));
+    HoodieFlinkTable<T> table = HoodieFlinkTable.create(config, (HoodieFlinkEngineContext) context);
+    HoodieTimeline completedTimeline = table.getMetaClient().getCommitsTimeline().filterCompletedInstants();
+    return completedTimeline.getInstants()
+        .filter(x -> x.getAction().equals(commitType))
+        .map(HoodieInstant::getTimestamp)
+        .collect(Collectors.toList()).stream()
+        .max(Comparator.naturalOrder())
+        .orElse(null);
+  }
+
+  public void deletePendingInstant(String tableType, String instant) {
+    HoodieFlinkTable<T> table = HoodieFlinkTable.create(config, (HoodieFlinkEngineContext) context);
+    String commitType = CommitUtils.getCommitActionType(HoodieTableType.valueOf(tableType));
+    HoodieActiveTimeline activeTimeline = table.getMetaClient().getActiveTimeline();
+    activeTimeline.deletePending(HoodieInstant.State.INFLIGHT, commitType, instant);
+    activeTimeline.deletePending(HoodieInstant.State.REQUESTED, commitType, instant);
+  }
+
+  public void transitionRequestedToInflight(String tableType, String inFlightInstant) {
+    HoodieFlinkTable<T> table = HoodieFlinkTable.create(config, (HoodieFlinkEngineContext) context);
+    HoodieActiveTimeline activeTimeline = table.getActiveTimeline();
+    String commitType = CommitUtils.getCommitActionType(HoodieTableType.valueOf(tableType));
+    HoodieInstant requested = new HoodieInstant(HoodieInstant.State.REQUESTED, commitType, inFlightInstant);
+    activeTimeline.transitionRequestedToInflight(requested, Option.empty(),
+        config.shouldAllowMultiWriteOnSameInstant());
   }
 }

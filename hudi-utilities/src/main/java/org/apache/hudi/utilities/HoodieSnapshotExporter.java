@@ -18,9 +18,9 @@
 
 package org.apache.hudi.utilities;
 
-import org.apache.hudi.client.common.HoodieEngineContext;
 import org.apache.hudi.client.common.HoodieSparkEngineContext;
 import org.apache.hudi.common.config.SerializableConfiguration;
+import org.apache.hudi.common.engine.HoodieEngineContext;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.HoodieBaseFile;
 import org.apache.hudi.common.model.HoodiePartitionMetadata;
@@ -117,6 +117,7 @@ public class HoodieSnapshotExporter {
 
   public void export(JavaSparkContext jsc, Config cfg) throws IOException {
     FileSystem fs = FSUtils.getFs(cfg.sourceBasePath, jsc.hadoopConfiguration());
+    HoodieSparkEngineContext engineContext = new HoodieSparkEngineContext(jsc);
 
     if (outputPathExists(fs, cfg)) {
       throw new HoodieSnapshotExporterException("The target output path already exists.");
@@ -128,7 +129,7 @@ public class HoodieSnapshotExporter {
     LOG.info(String.format("Starting to snapshot latest version files which are also no-late-than %s.",
         latestCommitTimestamp));
 
-    final List<String> partitions = getPartitions(fs, cfg);
+    final List<String> partitions = getPartitions(engineContext, cfg);
     if (partitions.isEmpty()) {
       throw new HoodieSnapshotExporterException("The source dataset has 0 partition to snapshot.");
     }
@@ -147,14 +148,14 @@ public class HoodieSnapshotExporter {
   }
 
   private Option<String> getLatestCommitTimestamp(FileSystem fs, Config cfg) {
-    final HoodieTableMetaClient tableMetadata = new HoodieTableMetaClient(fs.getConf(), cfg.sourceBasePath);
-    Option<HoodieInstant> latestCommit = tableMetadata.getActiveTimeline().getCommitsAndCompactionTimeline()
+    final HoodieTableMetaClient tableMetadata = HoodieTableMetaClient.builder().setConf(fs.getConf()).setBasePath(cfg.sourceBasePath).build();
+    Option<HoodieInstant> latestCommit = tableMetadata.getActiveTimeline().getWriteTimeline()
         .filterCompletedInstants().lastInstant();
     return latestCommit.isPresent() ? Option.of(latestCommit.get().getTimestamp()) : Option.empty();
   }
 
-  private List<String> getPartitions(FileSystem fs, Config cfg) throws IOException {
-    return FSUtils.getAllPartitionPaths(fs, cfg.sourceBasePath, false);
+  private List<String> getPartitions(HoodieEngineContext engineContext, Config cfg) {
+    return FSUtils.getAllPartitionPaths(engineContext, cfg.sourceBasePath, true, false, false);
   }
 
   private void createSuccessTag(FileSystem fs, Config cfg) throws IOException {
@@ -258,9 +259,9 @@ public class HoodieSnapshotExporter {
 
   private BaseFileOnlyView getBaseFileOnlyView(JavaSparkContext jsc, Config cfg) {
     FileSystem fs = FSUtils.getFs(cfg.sourceBasePath, jsc.hadoopConfiguration());
-    HoodieTableMetaClient tableMetadata = new HoodieTableMetaClient(fs.getConf(), cfg.sourceBasePath);
+    HoodieTableMetaClient tableMetadata = HoodieTableMetaClient.builder().setConf(fs.getConf()).setBasePath(cfg.sourceBasePath).build();
     return new HoodieTableFileSystemView(tableMetadata, tableMetadata
-        .getActiveTimeline().getCommitsAndCompactionTimeline().filterCompletedInstants());
+        .getActiveTimeline().getWriteTimeline().filterCompletedInstants());
   }
 
   public static void main(String[] args) throws IOException {

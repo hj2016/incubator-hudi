@@ -18,7 +18,7 @@
 
 package org.apache.hudi.table.action.commit;
 
-import org.apache.hudi.client.common.HoodieEngineContext;
+import org.apache.hudi.common.engine.HoodieEngineContext;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.HoodieBaseFile;
 import org.apache.hudi.common.model.HoodieCommitMetadata;
@@ -116,10 +116,7 @@ public class UpsertPartitioner<T extends HoodieRecordPayload<T>> implements Part
   private int addUpdateBucket(String partitionPath, String fileIdHint) {
     int bucket = totalBuckets;
     updateLocationToBucket.put(fileIdHint, bucket);
-    BucketInfo bucketInfo = new BucketInfo();
-    bucketInfo.bucketType = BucketType.UPDATE;
-    bucketInfo.fileIdPrefix = fileIdHint;
-    bucketInfo.partitionPath = partitionPath;
+    BucketInfo bucketInfo = new BucketInfo(BucketType.UPDATE, fileIdHint, partitionPath);
     bucketInfoMap.put(totalBuckets, bucketInfo);
     totalBuckets++;
     return bucket;
@@ -153,7 +150,7 @@ public class UpsertPartitioner<T extends HoodieRecordPayload<T>> implements Part
         for (SmallFile smallFile : smallFiles) {
           long recordsToAppend = Math.min((config.getParquetMaxFileSize() - smallFile.sizeBytes) / averageRecordSize,
               totalUnassignedInserts);
-          if (recordsToAppend > 0 && totalUnassignedInserts > 0) {
+          if (recordsToAppend > 0) {
             // create a new bucket or re-use an existing bucket
             int bucket;
             if (updateLocationToBucket.containsKey(smallFile.location.getFileId())) {
@@ -181,11 +178,12 @@ public class UpsertPartitioner<T extends HoodieRecordPayload<T>> implements Part
               + ", totalInsertBuckets => " + insertBuckets + ", recordsPerBucket => " + insertRecordsPerBucket);
           for (int b = 0; b < insertBuckets; b++) {
             bucketNumbers.add(totalBuckets);
-            recordsPerBucket.add(totalUnassignedInserts / insertBuckets);
-            BucketInfo bucketInfo = new BucketInfo();
-            bucketInfo.bucketType = BucketType.INSERT;
-            bucketInfo.partitionPath = partitionPath;
-            bucketInfo.fileIdPrefix = FSUtils.createNewFileIdPfx();
+            if (b < insertBuckets - 1) {
+              recordsPerBucket.add(insertRecordsPerBucket);
+            } else {
+              recordsPerBucket.add(totalUnassignedInserts - (insertBuckets - 1) * insertRecordsPerBucket);
+            }
+            BucketInfo bucketInfo = new BucketInfo(BucketType.INSERT, FSUtils.createNewFileIdPfx(), partitionPath);
             bucketInfoMap.put(totalBuckets, bucketInfo);
             totalBuckets++;
           }

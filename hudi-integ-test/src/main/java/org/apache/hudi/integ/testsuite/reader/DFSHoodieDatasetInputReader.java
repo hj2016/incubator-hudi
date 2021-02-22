@@ -19,6 +19,8 @@
 package org.apache.hudi.integ.testsuite.reader;
 
 import org.apache.hudi.avro.HoodieAvroUtils;
+import org.apache.hudi.client.common.HoodieSparkEngineContext;
+import org.apache.hudi.common.config.HoodieMetadataConfig;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.FileSlice;
 import org.apache.hudi.common.model.HoodieRecord;
@@ -35,7 +37,6 @@ import org.apache.hudi.config.HoodieMemoryConfig;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.generic.IndexedRecord;
-import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.parquet.avro.AvroParquetReader;
 import org.apache.parquet.avro.AvroReadSupport;
@@ -78,14 +79,15 @@ public class DFSHoodieDatasetInputReader extends DFSDeltaInputReader {
   public DFSHoodieDatasetInputReader(JavaSparkContext jsc, String basePath, String schemaStr) {
     this.jsc = jsc;
     this.schemaStr = schemaStr;
-    this.metaClient = new HoodieTableMetaClient(jsc.hadoopConfiguration(), basePath);
+    this.metaClient = HoodieTableMetaClient.builder().setConf(jsc.hadoopConfiguration()).setBasePath(basePath).build();
   }
 
   protected List<String> getPartitions(Option<Integer> partitionsLimit) throws IOException {
     // Using FSUtils.getFS here instead of metaClient.getFS() since we dont want to count these listStatus
     // calls in metrics as they are not part of normal HUDI operation.
-    FileSystem fs = FSUtils.getFs(metaClient.getBasePath(), metaClient.getHadoopConf());
-    List<String> partitionPaths = FSUtils.getAllPartitionPaths(fs, metaClient.getBasePath(), false);
+    HoodieSparkEngineContext engineContext = new HoodieSparkEngineContext(jsc);
+    List<String> partitionPaths = FSUtils.getAllPartitionPaths(engineContext, metaClient.getBasePath(),
+        HoodieMetadataConfig.DEFAULT_METADATA_ENABLE_FOR_READERS, HoodieMetadataConfig.DEFAULT_METADATA_VALIDATE, false);
     // Sort partition so we can pick last N partitions by default
     Collections.sort(partitionPaths);
     if (!partitionPaths.isEmpty()) {
@@ -193,7 +195,7 @@ public class DFSHoodieDatasetInputReader extends DFSDeltaInputReader {
   private JavaRDD<GenericRecord> projectSchema(JavaRDD<GenericRecord> updates) {
     // The records read from the hoodie dataset have the hoodie record fields, rewrite the record to eliminate them
     return updates
-        .map(r -> HoodieAvroUtils.rewriteRecordWithOnlyNewSchemaFields(r, new Schema.Parser().parse(schemaStr)));
+        .map(r -> HoodieAvroUtils.rewriteRecord(r, new Schema.Parser().parse(schemaStr)));
   }
 
   private JavaRDD<GenericRecord> generateUpdates(Map<String, Integer> adjustedPartitionToFileIdCountMap,

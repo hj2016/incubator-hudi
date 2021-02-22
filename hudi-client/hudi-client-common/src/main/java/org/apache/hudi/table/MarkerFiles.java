@@ -18,8 +18,8 @@
 
 package org.apache.hudi.table;
 
-import org.apache.hudi.client.common.HoodieEngineContext;
 import org.apache.hudi.common.config.SerializableConfiguration;
+import org.apache.hudi.common.engine.HoodieEngineContext;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.IOType;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
@@ -189,7 +189,9 @@ public class MarkerFiles implements Serializable {
   public Path create(String partitionPath, String dataFileName, IOType type) {
     Path path = FSUtils.getPartitionPath(markerDirPath, partitionPath);
     try {
-      fs.mkdirs(path); // create a new partition as needed.
+      if (!fs.exists(path)) {
+        fs.mkdirs(path); // create a new partition as needed.
+      }
     } catch (IOException e) {
       throw new HoodieIOException("Failed to make dir " + path, e);
     }

@@ -20,8 +20,8 @@ package org.apache.hudi.functional
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hudi.common.model.FileSlice
 import org.apache.hudi.common.table.HoodieTableMetaClient
-import org.apache.hudi.common.testutils.{HoodieTestDataGenerator, HoodieTestTable}
 import org.apache.hudi.common.testutils.RawTripTestPayload.recordsToStrings
+import org.apache.hudi.common.testutils.{HoodieTestDataGenerator, HoodieTestTable}
 import org.apache.hudi.config.{HoodieClusteringConfig, HoodieStorageConfig, HoodieWriteConfig}
 import org.apache.hudi.exception.TableNotFoundException
 import org.apache.hudi.testutils.HoodieClientTestBase
@@ -177,7 +177,8 @@ class TestStructuredStreaming extends HoodieClientTestBase {
         numInstants = timeline.countInstants
         success = true
       }
-      val metaClient = new HoodieTableMetaClient(fs.getConf, tablePath, true)
+      val metaClient = HoodieTableMetaClient.builder().setConf(fs.getConf).setBasePath(tablePath)
+      .setLoadActiveTimelineOnLoad(true).build()
     } catch {
       case te: TableNotFoundException =>
         log.info("Got table not found exception. Retrying")
@@ -204,9 +205,10 @@ class TestStructuredStreaming extends HoodieClientTestBase {
       // check have schedule clustering and clustering file group to one
       waitTillHasCompletedReplaceInstant(destPath, 120, 5)
       metaClient.reloadActiveTimeline()
-      assertEquals(1, getLatestFileGroupsFileId.size)
+      assertEquals(1, getLatestFileGroupsFileId(HoodieTestDataGenerator.DEFAULT_FIRST_PARTITION_PATH).size)
     }
-    structuredStreamingForTestClusteringRunner(sourcePath, destPath, true, checkClusteringResult)
+    structuredStreamingForTestClusteringRunner(sourcePath, destPath, true,
+      HoodieTestDataGenerator.DEFAULT_FIRST_PARTITION_PATH, checkClusteringResult)
   }
 
   @Test
@@ -219,21 +221,21 @@ class TestStructuredStreaming extends HoodieClientTestBase {
         override def execute(): Unit = {
           waitTillHasCompletedReplaceInstant(destPath, 120, 5)
         }
-      }
-        , "Should have replace commit completed")
+      }, msg)
       println(msg)
     }
-    structuredStreamingForTestClusteringRunner(sourcePath, destPath, false, checkClusteringResult)
+    structuredStreamingForTestClusteringRunner(sourcePath, destPath, false,
+      HoodieTestDataGenerator.DEFAULT_FIRST_PARTITION_PATH, checkClusteringResult)
   }
 
   def structuredStreamingForTestClusteringRunner(sourcePath: String, destPath: String,
-                                           isInlineClustering: Boolean, checkClusteringResult: String => Unit): Unit = {
+                                           isInlineClustering: Boolean, partitionOfRecords: String, checkClusteringResult: String => Unit): Unit = {
     // First insert of data
-    val records1 = recordsToStrings(dataGen.generateInsertsForPartition("000", 100, HoodieTestDataGenerator.DEFAULT_FIRST_PARTITION_PATH)).toList
+    val records1 = recordsToStrings(dataGen.generateInsertsForPartition("000", 100, partitionOfRecords)).toList
     val inputDF1 = spark.read.json(spark.sparkContext.parallelize(records1, 2))
 
     // Second insert of data
-    val records2 = recordsToStrings(dataGen.generateInsertsForPartition("001", 100, HoodieTestDataGenerator.DEFAULT_FIRST_PARTITION_PATH)).toList
+    val records2 = recordsToStrings(dataGen.generateInsertsForPartition("001", 100, partitionOfRecords)).toList
     val inputDF2 = spark.read.json(spark.sparkContext.parallelize(records2, 2))
 
     val hudiOptions = getInlineClusteringOpts(isInlineClustering.toString, "2", 100)
@@ -242,17 +244,26 @@ class TestStructuredStreaming extends HoodieClientTestBase {
     val f2 = Future {
       inputDF1.coalesce(1).write.mode(SaveMode.Append).json(sourcePath)
       // wait for spark streaming to process one microbatch
-      val currNumCommits = waitTillAtleastNCommits(fs, destPath, 1, 120, 5)
+      var currNumCommits = waitTillAtleastNCommits(fs, destPath, 1, 120, 5)
       assertTrue(HoodieDataSourceHelpers.hasNewCommits(fs, destPath, "000"))
 
       inputDF2.coalesce(1).write.mode(SaveMode.Append).json(sourcePath)
       // wait for spark streaming to process second microbatch
-      waitTillAtleastNCommits(fs, destPath, currNumCommits + 1, 120, 5)
-      assertEquals(2, HoodieDataSourceHelpers.listCommitsSince(fs, destPath, "000").size())
-
-      // check have more than one file group
-      this.metaClient = new HoodieTableMetaClient(fs.getConf, destPath, true)
-      assertTrue(getLatestFileGroupsFileId().size > 1)
+      currNumCommits = waitTillAtleastNCommits(fs, destPath, currNumCommits + 1, 120, 5)
+      // for inline clustering, clustering may be complete along with 2nd commit
+      if (HoodieDataSourceHelpers.allCompletedCommitsCompactions(fs, destPath).getCompletedReplaceTimeline().countInstants() > 0) {
+        assertEquals(3, HoodieDataSourceHelpers.listCommitsSince(fs, destPath, "000").size())
+        // check have at least one file group
+        this.metaClient = HoodieTableMetaClient.builder().setConf(fs.getConf).setBasePath(destPath)
+        .setLoadActiveTimelineOnLoad(true).build()
+        assertTrue(getLatestFileGroupsFileId(partitionOfRecords).size > 0)
+      } else {
+        assertEquals(currNumCommits, HoodieDataSourceHelpers.listCommitsSince(fs, destPath, "000").size())
+        // check have more than one file group
+        this.metaClient = HoodieTableMetaClient.builder().setConf(fs.getConf).setBasePath(destPath)
+        .setLoadActiveTimelineOnLoad(true).build()
+        assertTrue(getLatestFileGroupsFileId(partitionOfRecords).size > 1)
+      }
 
       // check clustering result
       checkClusteringResult(destPath)
@@ -265,10 +276,10 @@ class TestStructuredStreaming extends HoodieClientTestBase {
     Await.result(Future.sequence(Seq(f1, f2)), Duration.Inf)
   }
 
-  private def getLatestFileGroupsFileId():Array[String] = {
+  private def getLatestFileGroupsFileId(partition: String):Array[String] = {
     getHoodieTableFileSystemView(metaClient, metaClient.getActiveTimeline,
       HoodieTestTable.of(metaClient).listAllBaseFiles())
-    tableView.getLatestFileSlices(HoodieTestDataGenerator.DEFAULT_FIRST_PARTITION_PATH)
+    tableView.getLatestFileSlices(partition)
       .toArray().map(slice => slice.asInstanceOf[FileSlice].getFileGroupId.getFileId)
   }
 
@@ -283,7 +294,7 @@ class TestStructuredStreaming extends HoodieClientTestBase {
       this.metaClient.reloadActiveTimeline()
       val completeReplaceSize = this.metaClient.getActiveTimeline.getCompletedReplaceTimeline().getInstants.toArray.size
       println("completeReplaceSize:" + completeReplaceSize)
-      if(completeReplaceSize > 0) {
+      if (completeReplaceSize > 0) {
         success = true
       }
     } catch {
@@ -293,7 +304,7 @@ class TestStructuredStreaming extends HoodieClientTestBase {
       Thread.sleep(sleepSecsAfterEachRun * 1000)
       currTime = System.currentTimeMillis
     }
-    if (!success) throw new IllegalStateException("Timed-out waiting for "  + " have completed replace instant appear in " + tablePath)
+    if (!success) throw new IllegalStateException("Timed-out waiting for completing replace instant appear in " + tablePath)
   }
 
 }

@@ -35,6 +35,7 @@ import java.io.IOException;
 public class HoodieCommonTestHarness {
 
   protected String basePath = null;
+  protected transient HoodieTestDataGenerator dataGen = null;
   protected transient HoodieTableMetaClient metaClient;
   @TempDir
   public java.nio.file.Path tempDir;
@@ -53,6 +54,24 @@ public class HoodieCommonTestHarness {
   }
 
   /**
+   * Initializes a test data generator which used to generate test datas.
+   *
+   */
+  protected void initTestDataGenerator() {
+    dataGen = new HoodieTestDataGenerator();
+  }
+
+  /**
+   * Cleanups test data generator.
+   *
+   */
+  protected void cleanupTestDataGenerator() {
+    if (dataGen != null) {
+      dataGen = null;
+    }
+  }
+
+  /**
    * Initializes an instance of {@link HoodieTableMetaClient} with a special table type specified by
    * {@code getTableType()}.
    *
@@ -64,7 +83,7 @@ public class HoodieCommonTestHarness {
   }
 
   protected void refreshFsView() throws IOException {
-    metaClient = new HoodieTableMetaClient(metaClient.getHadoopConf(), basePath, true);
+    metaClient = HoodieTableMetaClient.builder().setConf(metaClient.getHadoopConf()).setBasePath(basePath).setLoadActiveTimelineOnLoad(true).build();
   }
 
   protected SyncableFileSystemView getFileSystemView(HoodieTimeline timeline) throws IOException {

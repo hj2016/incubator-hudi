@@ -19,8 +19,8 @@
 package org.apache.hudi.io.storage;
 
 import org.apache.hudi.avro.HoodieAvroUtils;
-import org.apache.hudi.client.common.TaskContextSupplier;
 import org.apache.hudi.common.bloom.BloomFilter;
+import org.apache.hudi.common.engine.TaskContextSupplier;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.fs.HoodieWrapperFileSystem;
 import org.apache.hudi.common.model.HoodieRecord;
@@ -121,17 +121,10 @@ public class HoodieHFileWriter<T extends HoodieRecordPayload, R extends IndexedR
 
     if (hfileConfig.useBloomFilter()) {
       hfileConfig.getBloomFilter().add(recordKey);
-      if (minRecordKey != null) {
-        minRecordKey = minRecordKey.compareTo(recordKey) <= 0 ? minRecordKey : recordKey;
-      } else {
+      if (minRecordKey == null) {
         minRecordKey = recordKey;
       }
-
-      if (maxRecordKey != null) {
-        maxRecordKey = maxRecordKey.compareTo(recordKey) >= 0 ? maxRecordKey : recordKey;
-      } else {
-        maxRecordKey = recordKey;
-      }
+      maxRecordKey = recordKey;
     }
   }
 

@@ -37,6 +37,7 @@ import org.apache.hudi.testutils.HoodieClientTestBase;
 
 import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -68,6 +69,11 @@ public class TestCompactionAdminClient extends HoodieClientTestBase {
     initSparkContexts();
     metaClient = HoodieTestUtils.init(HoodieTestUtils.getDefaultHadoopConf(), basePath, MERGE_ON_READ);
     client = new CompactionAdminClient(context, basePath);
+  }
+
+  @AfterEach
+  public void cleanUp() throws Exception {
+    cleanupResources();
   }
 
   @Test
@@ -129,7 +135,7 @@ public class TestCompactionAdminClient extends HoodieClientTestBase {
       int expNumRepairs) throws Exception {
     List<Pair<HoodieLogFile, HoodieLogFile>> renameFiles =
         validateUnSchedulePlan(client, ingestionInstant, compactionInstant, numEntriesPerInstant, expNumRepairs, true);
-    metaClient = new HoodieTableMetaClient(metaClient.getHadoopConf(), basePath, true);
+    metaClient = HoodieTableMetaClient.builder().setConf(metaClient.getHadoopConf()).setBasePath(basePath).setLoadActiveTimelineOnLoad(true).build();
     List<ValidationOpResult> result = client.validateCompactionPlan(metaClient, compactionInstant, 1);
     if (expNumRepairs > 0) {
       assertTrue(result.stream().anyMatch(r -> !r.isSuccess()), "Expect some failures in validation");
@@ -170,7 +176,7 @@ public class TestCompactionAdminClient extends HoodieClientTestBase {
    * @param compactionInstant Compaction Instant
    */
   private void ensureValidCompactionPlan(String compactionInstant) throws Exception {
-    metaClient = new HoodieTableMetaClient(metaClient.getHadoopConf(), basePath, true);
+    metaClient = HoodieTableMetaClient.builder().setConf(metaClient.getHadoopConf()).setBasePath(basePath).setLoadActiveTimelineOnLoad(true).build();
     // Ensure compaction-plan is good to begin with
     List<ValidationOpResult> validationResults = client.validateCompactionPlan(metaClient, compactionInstant, 1);
     assertFalse(validationResults.stream().anyMatch(v -> !v.isSuccess()),
@@ -228,7 +234,7 @@ public class TestCompactionAdminClient extends HoodieClientTestBase {
     // Check suggested rename operations
     List<Pair<HoodieLogFile, HoodieLogFile>> renameFiles =
         client.getRenamingActionsForUnschedulingCompactionPlan(metaClient, compactionInstant, 1, Option.empty(), false);
-    metaClient = new HoodieTableMetaClient(metaClient.getHadoopConf(), basePath, true);
+    metaClient = HoodieTableMetaClient.builder().setConf(metaClient.getHadoopConf()).setBasePath(basePath).setLoadActiveTimelineOnLoad(true).build();
 
     // Log files belonging to file-slices created because of compaction request must be renamed
 
@@ -264,7 +270,7 @@ public class TestCompactionAdminClient extends HoodieClientTestBase {
 
     client.unscheduleCompactionPlan(compactionInstant, false, 1, false);
 
-    metaClient = new HoodieTableMetaClient(metaClient.getHadoopConf(), basePath, true);
+    metaClient = HoodieTableMetaClient.builder().setConf(metaClient.getHadoopConf()).setBasePath(basePath).setLoadActiveTimelineOnLoad(true).build();
     final HoodieTableFileSystemView newFsView =
         new HoodieTableFileSystemView(metaClient, metaClient.getCommitsAndCompactionTimeline());
     // Expect all file-slice whose base-commit is same as compaction commit to contain no new Log files
@@ -300,7 +306,7 @@ public class TestCompactionAdminClient extends HoodieClientTestBase {
     // Check suggested rename operations
     List<Pair<HoodieLogFile, HoodieLogFile>> renameFiles = client
         .getRenamingActionsForUnschedulingCompactionOperation(metaClient, compactionInstant, op, Option.empty(), false);
-    metaClient = new HoodieTableMetaClient(metaClient.getHadoopConf(), basePath, true);
+    metaClient = HoodieTableMetaClient.builder().setConf(metaClient.getHadoopConf()).setBasePath(basePath).setLoadActiveTimelineOnLoad(true).build();
 
     // Log files belonging to file-slices created because of compaction request must be renamed
 
@@ -325,7 +331,7 @@ public class TestCompactionAdminClient extends HoodieClientTestBase {
     // Call the main unschedule API
     client.unscheduleCompactionFileId(op.getFileGroupId(), false, false);
 
-    metaClient = new HoodieTableMetaClient(metaClient.getHadoopConf(), basePath, true);
+    metaClient = HoodieTableMetaClient.builder().setConf(metaClient.getHadoopConf()).setBasePath(basePath).setLoadActiveTimelineOnLoad(true).build();
     final HoodieTableFileSystemView newFsView =
         new HoodieTableFileSystemView(metaClient, metaClient.getCommitsAndCompactionTimeline());
     // Expect all file-slice whose base-commit is same as compaction commit to contain no new Log files

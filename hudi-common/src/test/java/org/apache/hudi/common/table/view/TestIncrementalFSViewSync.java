@@ -20,6 +20,7 @@ package org.apache.hudi.common.table.view;
 
 import org.apache.hudi.avro.model.HoodieCleanMetadata;
 import org.apache.hudi.avro.model.HoodieCompactionPlan;
+import org.apache.hudi.avro.model.HoodieRequestedReplaceMetadata;
 import org.apache.hudi.avro.model.HoodieRestoreMetadata;
 import org.apache.hudi.avro.model.HoodieRollbackMetadata;
 import org.apache.hudi.common.HoodieCleanStat;
@@ -35,6 +36,7 @@ import org.apache.hudi.common.model.HoodieFileGroupId;
 import org.apache.hudi.common.model.HoodieReplaceCommitMetadata;
 import org.apache.hudi.common.model.HoodieTableType;
 import org.apache.hudi.common.model.HoodieWriteStat;
+import org.apache.hudi.common.model.WriteOperationType;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.table.timeline.HoodieInstant.State;
@@ -322,7 +324,7 @@ public class TestIncrementalFSViewSync extends HoodieCommonTestHarness {
     instantsToFiles = testMultipleWriteSteps(view1, Collections.singletonList("11"), true, "11");
 
     SyncableFileSystemView view2 =
-        getFileSystemView(new HoodieTableMetaClient(metaClient.getHadoopConf(), metaClient.getBasePath()));
+        getFileSystemView(HoodieTableMetaClient.builder().setConf(metaClient.getHadoopConf()).setBasePath(metaClient.getBasePath()).build());
 
     // Run 2 more ingestion on MOR table. View1 is not yet synced but View2 is
     instantsToFiles.putAll(testMultipleWriteSteps(view2, Arrays.asList("12", "13"), true, "11"));
@@ -332,7 +334,7 @@ public class TestIncrementalFSViewSync extends HoodieCommonTestHarness {
 
     view2.sync();
     SyncableFileSystemView view3 =
-        getFileSystemView(new HoodieTableMetaClient(metaClient.getHadoopConf(), metaClient.getBasePath()));
+        getFileSystemView(HoodieTableMetaClient.builder().setConf(metaClient.getHadoopConf()).setBasePath(metaClient.getBasePath()).build());
     view3.sync();
     areViewsConsistent(view1, view2, partitions.size() * fileIdsPerPartition.size());
 
@@ -344,7 +346,7 @@ public class TestIncrementalFSViewSync extends HoodieCommonTestHarness {
     view1.sync();
     areViewsConsistent(view1, view2, partitions.size() * fileIdsPerPartition.size());
     SyncableFileSystemView view4 =
-        getFileSystemView(new HoodieTableMetaClient(metaClient.getHadoopConf(), metaClient.getBasePath()));
+        getFileSystemView(HoodieTableMetaClient.builder().setConf(metaClient.getHadoopConf()).setBasePath(metaClient.getBasePath()).build());
     view4.sync();
 
     /*
@@ -358,7 +360,7 @@ public class TestIncrementalFSViewSync extends HoodieCommonTestHarness {
     view1.sync();
     areViewsConsistent(view1, view2, partitions.size() * fileIdsPerPartition.size() * 2);
     SyncableFileSystemView view5 =
-        getFileSystemView(new HoodieTableMetaClient(metaClient.getHadoopConf(), metaClient.getBasePath()));
+        getFileSystemView(HoodieTableMetaClient.builder().setConf(metaClient.getHadoopConf()).setBasePath(metaClient.getBasePath()).build());
     view5.sync();
 
     /*
@@ -381,7 +383,7 @@ public class TestIncrementalFSViewSync extends HoodieCommonTestHarness {
     view1.sync();
     areViewsConsistent(view1, view2, partitions.size() * fileIdsPerPartition.size() * 2);
     SyncableFileSystemView view6 =
-        getFileSystemView(new HoodieTableMetaClient(metaClient.getHadoopConf(), metaClient.getBasePath()));
+        getFileSystemView(HoodieTableMetaClient.builder().setConf(metaClient.getHadoopConf()).setBasePath(metaClient.getBasePath()).build());
     view6.sync();
 
     /*
@@ -554,7 +556,7 @@ public class TestIncrementalFSViewSync extends HoodieCommonTestHarness {
       boolean isRestore) throws IOException {
     Map<String, List<String>> partititonToFiles = deleteFiles(files);
     List<HoodieRollbackStat> rollbackStats = partititonToFiles.entrySet().stream().map(e ->
-        new HoodieRollbackStat(e.getKey(), e.getValue(), new ArrayList<>(), new HashMap<>())
+        new HoodieRollbackStat(e.getKey(), e.getValue(), new ArrayList<>(), new HashMap<>(), new HashMap<>())
     ).collect(Collectors.toList());
 
     List<HoodieInstant> rollbacks = new ArrayList<>();
@@ -857,11 +859,20 @@ public class TestIncrementalFSViewSync extends HoodieCommonTestHarness {
   private List<String> addReplaceInstant(HoodieTableMetaClient metaClient, String instant,
                                  List<Pair<String, HoodieWriteStat>> writeStats,
                                  Map<String, List<String>> partitionToReplaceFileIds) throws IOException {
+    // created requested
+    HoodieInstant newRequestedInstant = new HoodieInstant(HoodieInstant.State.REQUESTED, HoodieTimeline.REPLACE_COMMIT_ACTION, instant);
+    HoodieRequestedReplaceMetadata requestedReplaceMetadata = HoodieRequestedReplaceMetadata.newBuilder()
+        .setOperationType(WriteOperationType.UNKNOWN.name()).build();
+    metaClient.getActiveTimeline().saveToPendingReplaceCommit(newRequestedInstant,
+        TimelineMetadataUtils.serializeRequestedReplaceMetadata(requestedReplaceMetadata));
+    
+    metaClient.reloadActiveTimeline();
+    // transition to inflight
+    HoodieInstant inflightInstant = metaClient.getActiveTimeline().transitionReplaceRequestedToInflight(newRequestedInstant, Option.empty());
+    // transition to replacecommit
     HoodieReplaceCommitMetadata replaceCommitMetadata = new HoodieReplaceCommitMetadata();
     writeStats.forEach(e -> replaceCommitMetadata.addWriteStat(e.getKey(), e.getValue()));
     replaceCommitMetadata.setPartitionToReplaceFileIds(partitionToReplaceFileIds);
-    HoodieInstant inflightInstant = new HoodieInstant(true, HoodieTimeline.REPLACE_COMMIT_ACTION, instant);
-    metaClient.getActiveTimeline().createNewInstant(inflightInstant);
     metaClient.getActiveTimeline().saveAsComplete(inflightInstant,
         Option.of(replaceCommitMetadata.toJsonString().getBytes(StandardCharsets.UTF_8)));
     return writeStats.stream().map(e -> e.getValue().getPath()).collect(Collectors.toList());
