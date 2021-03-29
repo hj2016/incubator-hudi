@@ -29,7 +29,7 @@
   <groupId>org.apache.hudi</groupId>
   <artifactId>hudi</artifactId>
   <packaging>pom</packaging>
-  <version>0.8.0-SNAPSHOT</version>
+  <version>0.9.0-SNAPSHOT</version>
   <description>Apache Hudi brings stream style processing on big data</description>
   <url>https://github.com/apache/hudi</url>
   <name>Hudi</name>
@@ -106,9 +106,12 @@
     <prometheus.version>0.8.0</prometheus.version>
     <http.version>4.4.1</http.version>
     <spark.version>${spark2.version}</spark.version>
-    <flink.version>1.11.2</flink.version>
+    <sparkbundle.version>${spark2bundle.version}</sparkbundle.version>
+    <flink.version>1.12.2</flink.version>
     <spark2.version>2.4.4</spark2.version>
     <spark3.version>3.0.0</spark3.version>
+    <spark2bundle.version></spark2bundle.version>
+    <spark3bundle.version>3</spark3bundle.version>
     <avro.version>1.8.2</avro.version>
     <scala11.version>2.11.12</scala11.version>
     <scala12.version>2.12.10</scala12.version>
@@ -143,6 +146,7 @@
     <presto.bundle.bootstrap.scope>compile</presto.bundle.bootstrap.scope>
     <presto.bundle.bootstrap.shade.prefix>org.apache.hudi.</presto.bundle.bootstrap.shade.prefix>
     <shadeSources>true</shadeSources>
+    <zk-curator.version>2.7.1</zk-curator.version>
   </properties>
 
   <scm>
@@ -907,6 +911,25 @@
         <scope>test</scope>
       </dependency>
 
+      <!-- Zookeeper -->
+      <dependency>
+        <groupId>org.apache.curator</groupId>
+        <artifactId>curator-framework</artifactId>
+        <version>${zk-curator.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>org.apache.curator</groupId>
+        <artifactId>curator-client</artifactId>
+        <version>${zk-curator.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>org.apache.curator</groupId>
+        <artifactId>curator-recipes</artifactId>
+        <version>${zk-curator.version}</version>
+      </dependency>
+
       <dependency>
         <groupId>org.junit.jupiter</groupId>
         <artifactId>junit-jupiter-api</artifactId>
@@ -1250,6 +1273,40 @@
       </build>
     </profile>
     <profile>
+      <id>azp-unit-tests</id>
+      <properties>
+        <skipUTs>false</skipUTs>
+        <skipFTs>true</skipFTs>
+        <skipITs>true</skipITs>
+      </properties>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <dependencies>
+              <dependency>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter-engine</artifactId>
+                <version>${junit.jupiter.version}</version>
+              </dependency>
+            </dependencies>
+            <configuration combine.self="append">
+              <skip>${skipUTs}</skip>
+              <forkedProcessExitTimeoutInSeconds>120</forkedProcessExitTimeoutInSeconds>
+              <excludedGroups>functional</excludedGroups>
+              <excludes>
+                <exclude>**/*FunctionalTestSuite.java</exclude>
+                <exclude>**/IT*.java</exclude>
+                <exclude>**/testsuite/**/Test*.java</exclude>
+                <exclude>**/TestPushGateWayReporter.java</exclude>
+              </excludes>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
       <id>javadocs</id>
       <build>
         <plugins>
@@ -1405,6 +1462,7 @@
       <id>spark3</id>
       <properties>
         <spark.version>${spark3.version}</spark.version>
+        <sparkbundle.version>${spark3bundle.version}</sparkbundle.version>
         <scala.version>${scala12.version}</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
         <kafka.version>2.4.1</kafka.version>

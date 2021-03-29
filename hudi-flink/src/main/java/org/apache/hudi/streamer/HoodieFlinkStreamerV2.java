@@ -19,10 +19,10 @@
 package org.apache.hudi.streamer;
 
 import org.apache.hudi.common.model.HoodieRecord;
-import org.apache.hudi.operator.FlinkOptions;
-import org.apache.hudi.operator.StreamWriteOperatorFactory;
-import org.apache.hudi.operator.partitioner.BucketAssignFunction;
-import org.apache.hudi.operator.transform.RowDataToHoodieFunction;
+import org.apache.hudi.configuration.FlinkOptions;
+import org.apache.hudi.sink.StreamWriteOperatorFactory;
+import org.apache.hudi.sink.partitioner.BucketAssignFunction;
+import org.apache.hudi.sink.transform.RowDataToHoodieFunction;
 import org.apache.hudi.util.AvroSchemaConverter;
 import org.apache.hudi.util.StreamerUtil;
 
@@ -36,7 +36,7 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.operators.KeyedProcessOperator;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
-import org.apache.flink.table.runtime.typeutils.RowDataTypeInfo;
+import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.table.types.logical.RowType;
 
 import java.util.Properties;
@@ -72,7 +72,7 @@ public class HoodieFlinkStreamerV2 {
         (RowType) AvroSchemaConverter.convertToDataType(StreamerUtil.getSourceSchema(cfg))
             .getLogicalType();
     Configuration conf = FlinkOptions.fromStreamerConfig(cfg);
-    int numWriteTask = conf.getInteger(FlinkOptions.WRITE_TASK_PARALLELISM);
+    int numWriteTask = conf.getInteger(FlinkOptions.WRITE_TASKS);
     StreamWriteOperatorFactory<HoodieRecord> operatorFactory =
         new StreamWriteOperatorFactory<>(conf);
 
@@ -80,7 +80,7 @@ public class HoodieFlinkStreamerV2 {
         cfg.kafkaTopic,
         new JsonRowDataDeserializationSchema(
             rowType,
-            new RowDataTypeInfo(rowType),
+            InternalTypeInfo.of(rowType),
             false,
             true,
             TimestampFormat.ISO_8601
